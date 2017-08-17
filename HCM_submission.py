@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import xlrd
 import numpy as np
 from sklearn import svm
 from collections import OrderedDict
@@ -68,37 +69,43 @@ def mean_fun(onelist): #评估结果取平均
 	
 def performance(labelArr, predictArr):#性能评估，记录每次测试的指标
 	accs=[];f1s=[]
-	TPs = []; TNs = []; FPs = []; Performs = []
+	TPs = []; FNs = []; FPs = []; Performs = []
+	#测试用的 一会删
+	#for j in range(len(labelArr[0])):
+	#	print(labelArr[0][j],labelArr[1][j],labelArr[2][j],labelArr[3][j],labelArr[4][j],labelArr[5][j],'=====')
+	#print(predictArr)
+	
+	#,predictArr[0][j],predictArr[1][j],predictArr[2][j],predictArr[3][j],predictArr[4][j],predictArr[5][j]
 	for j in range(len(labelArr[0])):
 		TP = 0.; FN = 0.; FP = 0.; TN = 0.
 		for i in range(len(labelArr)):
-			if labelArr[i][j] == 1 and predictArr[i][j] == 1:
+			if labelArr[i][j] == '1' and predictArr[i][j] == '1':
 				TP += 1.
-			if labelArr[i] == 1 and predictArr[i] == 0:
+			if labelArr[i][j] == '1' and predictArr[i][j] == '0':
 				FN += 1.
-			if labelArr[i] == 0 and predictArr[i] == 1:
+			if labelArr[i][j] == '0' and predictArr[i][j] == '1':
 				FP += 1.
-			if labelArr[i] == 0 and predictArr[i] == 0:
+			if labelArr[i][j] == '0' and predictArr[i][j] == '0':
 				TN += 1.
+		if TP+FN+FP==0:
+			print('这个项全部是TN=0',j)
 		TPs.append(TP); FNs.append(FN); FPs.append(FP)
 	Performs=[TPs,FNs,FPs]
 	#计算各个rna预测的acc值
 	for j in range(len(Performs[0])):
-		accs[j] = Performs[0][j]/(Performs[0][j]+Performs[1][j]+Performs[2][j])
+		accs.append(Performs[0][j]/(Performs[0][j]+Performs[1][j]+Performs[2][j]))
 	#计算F1值
 	for i in range(len(labelArr)):
 		pre = 0.;rec = 0.
 		for j in range(len(labelArr[0])):
-			if predictArr[i][j] == 1:
-				pre += Performs[0][j]/(Performs[0][j]+Performs[2][j])
-			if labelArr[i][j] == 1:
-				rec += Performs[0][j]/(Performs[0][j]+Performs[1][j])
-		f1s[i] = 2*pre*rec/(pre+rec)
+			if (predictArr[i][j] == '1')and(labelArr[i][j]== '1'):
+				pre += 1;rec +=1
+		f1s.append(pre)
 	ACC_mean = mean_fun(accs)
 	F1_mean = mean_fun(f1s)
 	return ACC_mean, F1_mean
 
-def classifier(clf,train_x,train_y,test_x,test_y): #调用svm分类器，返回测试评估结果
+def classifier(clf,train_x,train_y,test_x): #调用svm分类器，返回测试评估结果
 	clf = clf.fit(train_x,train_y)
 	predict = clf.predict(test_x)
 	return predict
@@ -126,11 +133,26 @@ def generateLabels(dataset,arrays): # 用于生成labels
 	arrays[3].append(dataset['Microvesicle'])
 	arrays[4].append(dataset['Circulating'])
 	arrays[5].append(dataset['Nucleus'])
+
+def read_xlrd(filename): # 用于生成数据集名字和总表名字 对应的map
+	workbook = xlrd.open_workbook(filename)
+	booksheet = workbook.sheet_by_name('Sheet1')
+	nameMap = {}
+	for row in range(booksheet.nrows):
+		xlsx_item = []; dic={}
+		for col in range(booksheet.ncols):
+			cel = booksheet.cell(row,col)
+			val = cel.value
+			xlsx_item.append(val.strip().split())	
+		for item in xlsx_item[1]:
+			dic[item] = xlsx_item[0][0]
+		nameMap.update(dic)
+	#for item in nameMap.items():
+	#	print(item)
+	return nameMap	
 	
-def generateK_neighbors(rnaname,datanames): #用于找K个近邻
+def generateK_neighbors(rnaname,datanames,rna_index,rna_corMat): #用于找K个近邻
 	sim = {}
-	#处理miRNA关系矩阵，便于相似度查询
-	rna_index, rna_corMat = rebuild_cor_mat('sim_Ours_Euc.json')
 	x = rna_index[rnaname]
 	for item in datanames:
 		y = rna_index[item]
@@ -138,69 +160,90 @@ def generateK_neighbors(rnaname,datanames): #用于找K个近邻
 			sim[item]=rna_corMat[x][y]
 		else:
 			sim[item]=rna_corMat[y][x]
-	return (sorted(sim.items(), key=lambda x: x[1],  reverse=True))[:20]
+	return sorted(sim.items(), key=lambda x: x[1],  reverse=True)
 
 def crossValidation(clf,train_all,test_all):#  交叉验证
-	ACCs=[]  
-	F1s=[]
-	for i in range(len(train_all)):   #交叉验证len(train_all)次
-		train_data = train_all[i]; train_x = []; train_y = [[]]*6
-		test_data = test_all[i]; test_x = []; test_y = [[]]*6;predict_y = [[]]*6
+	ACCs=[0 for i in range(10)]  
+	F1s=[0 for i in range(10)]
+	for num in range(len(train_all)):   #交叉验证len(train_all)次
+		train_data = train_all[num]; train_x = []; train_y = [[] for row in range(6)]
+		test_data = test_all[num]; test_x = []; test_y = [[] for row in range(6)];predict_y = [[] for row in range(6)]
 		train_rna_name = []; test_rna_name = []
-		#处理训练集和测试集数据，生成概率向量
-		for eachline in train_data:    #生成训练集labels
-			train_rna_name.append(eachline['name'])
-			#print(eachline['Exosome'],eachline['Cytoplasm'],eachline['Mitochondrion'],eachline['Microvesicle'],eachline['Circulating'],eachline['Nucleus'])
-			generateLabels(eachline,train_y)
-		#print(train_rna_name)
 		
-		'''  #测试总表中不包含的rna
-		rna_index, rna_corMat = rebuild_cor_mat('sim_Ours_Euc.json')
-		print(rna_index.keys(),len(rna_index))
-		print('=============================================================')
+		#生成别名对应关系、关系矩阵和矩阵的索引
+		rna_rowindex, rna_corMat = rebuild_cor_mat('sim_Ours_Euc.json')
+		rna_nameMap = read_xlrd('miRNA_nameMap.xlsx')
+		rna_index={}
+		#处理训练集和测试集数据，生成概率向量
+		for eachline in train_data: 	#生成训练集labels
+			name = eachline['name']
+			if name in rna_rowindex.keys():
+				rna_index[name] = rna_rowindex[name]
+			elif name in rna_nameMap.keys():
+				rna_index[name] = rna_rowindex[rna_nameMap[name]]
+			else:
+				continue
+			train_rna_name.append(name)
+			generateLabels(eachline,train_y)
+		'''
+		#测试不包含在总表里面的RNA数目
 		count = 0
 		for item in train_rna_name:
 			if item not in rna_index.keys():
-				print(item)
-				count +=1
-		print(count)
+				if item not in rna_nameMap.keys():
+					print(item)
+					count +=1
+		print(count)	
 		'''
-		
 		for item in train_rna_name: 	#生成训练集向量
 			k_neighbors={}; item_vec=[]
-			k_neighbors=generateK_neighbors(item,train_rna_name)
-			sim_sum = 0;simA=0;simB=0;simC=0;simD=0;simE=0;simF=0
-			for neighbor in k_neighbors.items():
+			k_neighbors=generateK_neighbors(item,train_rna_name,rna_index,rna_corMat)[0:20]
+			sim_sum = 0.;simA=0.;simB=0.;simC=0.;simD=0.;simE=0.;simF=0.
+			for neighbor in k_neighbors:
 				sim_sum += neighbor[1]
-				if train_y[0][train_rna_name.index(neighbor[0])] ==1 : simA+=neighbor[1]
-				if train_y[1][train_rna_name.index(neighbor[0])] ==1 : simB+=neighbor[1]
-				if train_y[2][train_rna_name.index(neighbor[0])] ==1 : simC+=neighbor[1]
-				if train_y[3][train_rna_name.index(neighbor[0])] ==1 : simD+=neighbor[1]
-				if train_y[4][train_rna_name.index(neighbor[0])] ==1 : simE+=neighbor[1]
-				if train_y[5][train_rna_name.index(neighbor[0])] ==1 : simF+=neighbor[1]
+				if train_y[0][train_rna_name.index(neighbor[0])] == '1' : simA+=neighbor[1]
+				if train_y[1][train_rna_name.index(neighbor[0])] == '1' : simB+=neighbor[1]
+				if train_y[2][train_rna_name.index(neighbor[0])] == '1' : simC+=neighbor[1]
+				if train_y[3][train_rna_name.index(neighbor[0])] == '1' : simD+=neighbor[1]
+				if train_y[4][train_rna_name.index(neighbor[0])] == '1' : simE+=neighbor[1]
+				if train_y[5][train_rna_name.index(neighbor[0])] == '1' : simF+=neighbor[1]
 			item_vec=[simA/sim_sum,simB/sim_sum,simC/sim_sum,simD/sim_sum,simE/sim_sum,simF/sim_sum]
 			train_x.append(item_vec)
 		for eachline in test_data:		#生成测试集的labels
+			name = eachline['name']
+			if name in rna_rowindex.keys():
+				rna_index[name] = rna_rowindex[name]
+			elif name in rna_nameMap.keys():
+				rna_index[name] = rna_rowindex[rna_nameMap[name]]
+			else:
+				continue
 			test_rna_name.append(eachline['name'])
 			generateLabels(eachline,test_y)	
 		for item in test_rna_name:		#生成测试集向量
 			k_neighbors={};itemVector=[]
-			k_neighbors=generateK_neighbors(item,train_rna_name)
+			k_neighbors=generateK_neighbors(item,train_rna_name,rna_index,rna_corMat)[0:20]
 			sim_sum = 0;simA=0;simB=0;simC=0;simD=0;simE=0;simF=0
-			for neighbor in k_neighbors.items():
+			for neighbor in k_neighbors:
 				sim_sum += neighbor[1]
-				if test_y[0][test_rna_name.index(neighbor[0])] ==1 : simA+=neighbor[1]
-				if test_y[1][test_rna_name.index(neighbor[0])] ==1 : simB+=neighbor[1]
-				if test_y[2][test_rna_name.index(neighbor[0])] ==1 : simC+=neighbor[1]
-				if test_y[3][test_rna_name.index(neighbor[0])] ==1 : simD+=neighbor[1]
-				if test_y[4][test_rna_name.index(neighbor[0])] ==1 : simE+=neighbor[1]
-				if test_y[5][test_rna_name.index(neighbor[0])] ==1 : simF+=neighbor[1]
+				if train_y[0][train_rna_name.index(neighbor[0])] =='1' : simA+=neighbor[1]
+				if train_y[1][train_rna_name.index(neighbor[0])] =='1' : simB+=neighbor[1]
+				if train_y[2][train_rna_name.index(neighbor[0])] =='1' : simC+=neighbor[1]
+				if train_y[3][train_rna_name.index(neighbor[0])] =='1' : simD+=neighbor[1]
+				if train_y[4][train_rna_name.index(neighbor[0])] =='1' : simE+=neighbor[1]
+				if train_y[5][train_rna_name.index(neighbor[0])] =='1' : simF+=neighbor[1]
 			itemVector=[simA/sim_sum,simB/sim_sum,simC/sim_sum,simD/sim_sum,simE/sim_sum,simF/sim_sum]
 			test_x.append(itemVector)
 		#分类器对每个label训练并预测
 		for i in range(6):
-			predict_y.append(classifier(clf,train_x,train_y[i],test_x,test_y[i]))  #对6个位置分别分类
-		ACCs[i] ,F1s[i] =performance(test_y,predict_y)
+			predict_y[i] = classifier(clf,train_x,train_y[i],test_x)  #对6个位置分别分类
+		#测试的，一会删
+		'''
+		print(len(test_y[0]),len(predict_y[0]))
+		for j in range(len(train_y[0])-1):
+			print(train_y[0][j],train_y[1][j],train_y[2][j],train_y[3][j],train_y[4][j],train_y[5][j],'===========',predict_y[0][j],predict_y[1][j],predict_y[2][j],predict_y[3][j],predict_y[4][j],predict_y[5][j])
+		#predict_y[0][j],predict_y[1][j],predict_y[2][j],predict_y[3][j],predict_y[4][j],predict_y[5][j]
+		'''
+		ACCs[num],F1s[num] =performance(test_y,predict_y)
 	ACC_mean = mean_fun(ACCs)
 	F1_mean = mean_fun(F1s)
 	return ACC_mean,F1_mean
